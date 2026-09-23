@@ -35,7 +35,12 @@ fn render(
     }
     args.extend(["-smush".into(), gap.clone(), "-bordercolor".into(), bg, "-border".into(), gap, "-extent".into(), format!("{canvas_w}x{canvas_h}"), out]);
 
-    let output = Command::new("magick")
+    // GUI launches on macOS don't inherit shell PATH, so probe Homebrew locations first
+    let magick = ["/opt/homebrew/bin/magick", "/usr/local/bin/magick"]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .unwrap_or("magick");
+    let output = Command::new(magick)
         .args(&args)
         .output()
         .map_err(|e| format!("failed to run magick (is ImageMagick installed?): {e}"))?;
