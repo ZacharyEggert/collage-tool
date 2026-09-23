@@ -1,0 +1,16 @@
+{
+  "name": "@diablo/collage-tool",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.5"
+  }
+}

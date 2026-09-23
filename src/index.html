@@ -1,0 +1,147 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Collage Tool</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; box-sizing: border-box; display: grid; grid-template-columns: 220px 1fr; gap: 16px; height: 100vh; }
+  form { display: flex; flex-direction: column; gap: 10px; }
+  label { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  input[type=number] { width: 70px; }
+  #aw, #ah { width: 42px; }
+  #status { font-size: 12px; white-space: pre-wrap; }
+  #stage { container-type: size; display: grid; place-items: center; min-height: 0; }
+  /* --u = one output pixel on screen, so gap/border scale exactly like the render */
+  #grid { --u: min(100cqw / var(--tw), 100cqh / var(--th)); display: grid; width: calc(var(--u) * var(--tw)); height: calc(var(--u) * var(--th)); gap: calc(var(--u) * var(--gap)); padding: calc(var(--u) * var(--gap)); box-sizing: border-box; background: var(--bg); outline: 1px solid #ccc; }
+  .slot { position: relative; min-width: 0; min-height: 0; }
+  .slot > button.fill { width: 100%; height: 100%; border: 2px dashed #999; border-radius: 6px; background: transparent; color: #666; font: inherit; font-size: 13px; cursor: pointer; padding: 4px; }
+  .slot img { width: 100%; height: 100%; object-fit: contain; display: block; cursor: grab; touch-action: none; user-select: none; }
+  .slot.over > * { outline: 3px solid #1a73e8; outline-offset: -3px; }
+  .slot .clear { position: absolute; top: 4px; right: 4px; border: 0; border-radius: 50%; width: 24px; height: 24px; background: #000a; color: #fff; cursor: pointer; }
+</style>
+</head>
+<body>
+<form id="form">
+  <label>Columns <input type="number" id="cols" value="2" min="1" max="20" required></label>
+  <label>Rows <input type="number" id="rows" value="2" min="1" max="20" required></label>
+  <label>Aspect (W:H) <span><input type="number" id="aw" value="5" min="1" required aria-label="Aspect width">:<input type="number" id="ah" value="4" min="1" required aria-label="Aspect height"></span></label>
+  <label>Gap (px) <input type="number" id="gap" value="4" min="0" required></label>
+  <label>Background <input type="color" id="bg" value="#4d4d4d"></label>
+  <button type="submit">Save collage…</button>
+  <div id="status" role="status"></div>
+</form>
+<div id="stage"><div id="grid"></div></div>
+<script>
+  const { invoke, convertFileSrc } = window.__TAURI__.core;
+  const { open, save } = window.__TAURI__.dialog;
+  const $ = (id) => document.getElementById(id);
+  const EXTS = ["jpg", "jpeg", "png", "heic", "webp", "tif", "tiff", "gif"];
+  const isImage = (p) => EXTS.includes(p.split(".").pop().toLowerCase());
+  let slots = []; // file path or null, row-major
+
+  function draw() {
+    const cols = +$("cols").value || 1, rows = +$("rows").value || 1;
+    const { gap, canvasW: W, canvasH: H } = tile();
+    slots.length = cols * rows; // grow pads with undefined, shrink drops overflow
+    const grid = $("grid");
+    grid.style.cssText = `--tw:${W};--th:${H};--gap:${gap};--bg:${$("bg").value};grid-template:repeat(${rows},1fr)/repeat(${cols},1fr)`;
+    grid.replaceChildren(...Array.from({ length: cols * rows }, (_, i) => {
+      const slot = document.createElement("div");
+      slot.className = "slot";
+      slot.dataset.i = i;
+      const path = slots[i];
+      if (path) {
+        const img = Object.assign(document.createElement("img"), { src: convertFileSrc(path), alt: path.split("/").pop(), draggable: false });
+        img.onpointerdown = (e) => { e.preventDefault(); dragFrom = i; };
+        const clear = Object.assign(document.createElement("button"), { type: "button", className: "clear", textContent: "×", ariaLabel: "Remove image" });
+        clear.onclick = () => { slots[i] = null; draw(); };
+        slot.append(img, clear);
+      } else {
+        const fill = Object.assign(document.createElement("button"), { type: "button", className: "fill", textContent: "Drop photo or click" });
+        fill.onclick = async () => {
+          const p = await open({ filters: [{ name: "Images", extensions: EXTS }] });
+          if (p) place(i, p);
+        };
+        slot.append(fill);
+      }
+      return slot;
+    }));
+  }
+
+  // Tauri intercepts OS file drops (HTML drop events get no paths); drops fill empty slots in order.
+  window.__TAURI__.webview.getCurrentWebview().onDragDropEvent(({ payload }) => {
+    if (payload.type !== "drop") return;
+    const paths = payload.paths.filter(isImage);
+    if (!paths.length) return;
+    if (!slots.some(Boolean)) setAspect(paths[0]);
+    for (let i = 0; i < slots.length && paths.length; i++) if (!slots[i]) slots[i] = paths.shift();
+    draw();
+  });
+
+  function place(i, path) {
+    if (!slots.some(Boolean)) setAspect(path);
+    slots[i] = path;
+    draw();
+  }
+
+  const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+  function setAspect(path) {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.naturalWidth, h = img.naturalHeight, g = gcd(w, h);
+      if (w / g > 50) { w = Math.round((w / h) * 100); h = 100; g = gcd(w, h); } // odd sizes: round to 2 decimals
+      $("aw").value = w / g; $("ah").value = h / g;
+      draw();
+    };
+    img.src = convertFileSrc(path);
+  }
+
+  // Largest tile that keeps the output's long side <= LONG; W/H is then pinned to exactly LONG on that side.
+  const LONG = 3840;
+  function tile() {
+    const cols = +$("cols").value || 1, rows = +$("rows").value || 1, gap = +$("gap").value || 0;
+    const r = (+$("ah").value || 1) / (+$("aw").value || 1);
+    const byW = (LONG - (cols + 1) * gap) / cols, byH = (LONG - (rows + 1) * gap) / (rows * r);
+    const w = Math.max(1, Math.floor(Math.min(byW, byH))), h = Math.max(1, Math.floor(w * r));
+    // ponytail: flooring loses < cols px; extent pads it into the outer border
+    const W = byW <= byH ? LONG : cols * w + (cols + 1) * gap;
+    const H = byW <= byH ? rows * h + (rows + 1) * gap : LONG;
+    return { w, h, gap, canvasW: W, canvasH: H };
+  }
+
+  // Drag between slots to swap (pointer events: Tauri's OS drop handler can swallow HTML5 DnD).
+  let dragFrom = null;
+  window.onpointermove = (e) => {
+    if (dragFrom === null) return;
+    document.querySelectorAll(".slot.over").forEach((s) => s.classList.remove("over"));
+    document.elementFromPoint(e.clientX, e.clientY)?.closest(".slot")?.classList.add("over");
+  };
+  window.onpointerup = (e) => {
+    if (dragFrom === null) return;
+    const to = document.elementFromPoint(e.clientX, e.clientY)?.closest(".slot")?.dataset.i;
+    if (to !== undefined) [slots[dragFrom], slots[+to]] = [slots[+to], slots[dragFrom]];
+    dragFrom = null;
+    draw();
+  };
+
+  $("form").oninput = draw;
+  $("form").onsubmit = async (e) => {
+    e.preventDefault();
+    if (!slots.some(Boolean)) return ($("status").textContent = "Add at least one photo.");
+    const out = await save({ defaultPath: "collage.jpg", filters: [{ name: "Image", extensions: ["jpg", "png"] }] });
+    if (!out) return;
+    $("status").textContent = "Rendering…";
+    try {
+      await invoke("render", {
+        files: Array.from(slots, (p) => p || null),
+        cols: +$("cols").value, ...tile(), bg: $("bg").value, out,
+      });
+      $("status").textContent = `Saved ${out.split("/").pop()}`;
+    } catch (err) {
+      $("status").textContent = String(err);
+    }
+  };
+  draw();
+</script>
+</body>
+</html>
